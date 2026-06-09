@@ -55,7 +55,12 @@ app = FastAPI(
 
 
 def _load_prompt() -> str:
-    return (BASE_DIR / "prompt.md").read_text(encoding="utf-8")
+    raw = (BASE_DIR / "prompt.md").read_text(encoding="utf-8")
+    # ChatPromptTemplate treats {x} as template variables. Escape every brace so
+    # the markdown examples reach the LLM verbatim, then re-open only {today},
+    # which is the single real variable injected at request time.
+    escaped = raw.replace("{", "{{").replace("}", "}}")
+    return escaped.replace("{{today}}", "{today}")
 
 
 # ── Session store ───────────────────────────────────────────────────────────
