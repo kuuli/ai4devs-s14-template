@@ -1,0 +1,17 @@
+---
+description: Jira configuration for the implement and enrich commands and Atlassian MCP calls
+alwaysApply: false
+---
+
+# Jira Configuration
+
+- **Cloud ID:** `<your-jira-cloud-id>`
+- **Site:** <your-org>.atlassian.net
+- **MCP Server:** `user-Atlassian`
+
+Use this Cloud ID for all Atlassian MCP tool calls.
+
+**Commands:**
+- **Enrich** (`.cursor/skills/enrich/SKILL.md`): Add or refine a ticket's description, acceptance criteria, and technical specs before implementation. Trigger: "enrich" + ticket key or URL.
+- **Implement** (`.cursor/skills/implement/SKILL.md`): Implement a ticket end-to-end (branch, TDD, PR). Trigger: "implement" + ticket key.
+- **PR Review** (`.cursor/skills/pr-review/SKILL.md`): Review a GitHub PR against its linked Jira ticket — code quality, best practices, AC coverage, and structured verdict. Trigger: "pr-review" + PR number or URL (optionally + ticket key).

@@ -1,0 +1,365 @@
+openapi: "3.1.0"
+
+info:
+  title: Chatbot API
+  version: "1.0.0"
+  description: |
+    LangChain-powered chatbot with session-scoped conversation history.
+
+    Supports a REST chat endpoint and an optional WhatsApp Business integration
+    via the Meta Cloud API. The LLM backend runs a tool-calling agent loop
+    (up to 5 rounds) before returning a final reply.
+
+    **Session model** — pass a consistent `session_id` across requests to maintain
+    conversation context. Sessions are stored in-process and reset on server restart.
+  contact:
+    name: Kuuli Tech
+    email: jmarco@kuuli.tech
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:8000
+    description: Local development server
+
+tags:
+  - name: Chat
+    description: Core chat endpoint — send a message and receive a bot reply.
+  - name: WhatsApp
+    description: |
+      Meta Cloud API webhook integration.
+      Set `WHATSAPP_VERIFY_TOKEN`, `WHATSAPP_ACCESS_TOKEN`, and
+      `WHATSAPP_PHONE_NUMBER_ID` environment variables to enable.
+
+paths:
+  /askbot:
+    post:
+      operationId: sendMessage
+      tags: [Chat]
+      summary: Send a message to the bot
+      description: |
+        Submits a user message and returns the bot reply.
+
+        The agent may perform up to **5 internal tool-call rounds** before
+        producing a final response. All rounds are transparent to the caller —
+        only the final reply is returned.
+
+        **Session continuity** — use the same `session_id` across requests to
+        maintain conversation history within a server lifecycle.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AskBotRequest"
+            examples:
+              basic:
+                summary: Simple greeting
+                value:
+                  msg: "What can you help me with?"
+                  session_id: "user-123"
+              follow_up:
+                summary: Follow-up in the same session
+                value:
+                  msg: "Tell me more about the second point."
+                  session_id: "user-123"
+      responses:
+        "200":
+          description: Bot reply returned successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AskBotResponse"
+              examples:
+                reply:
+                  summary: Successful reply
+                  value:
+                    msg: "I can answer questions, help with tasks, and much more!"
+                    session_id: "user-123"
+        "422":
+          description: |
+            Validation error — `msg` is blank, missing, or a required field
+            failed validation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationError"
+              examples:
+                blank_msg:
+                  summary: Blank message
+                  value:
+                    detail:
+                      - loc: ["body", "msg"]
+                        msg: "msg must not be blank"
+                        type: "value_error"
+        "503":
+          description: |
+            Chat service unavailable — the LLM chain failed to initialise.
+            Typically caused by a missing or invalid `OPENAI_API_KEY`.
+            Static routes (`/` and `/public/*`) remain available.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorDetail"
+              examples:
+                missing_key:
+                  summary: Missing API key
+                  value:
+                    detail: "Chat service unavailable: OPENAI_API_KEY is not set"
+
+  /webhook:
+    get:
+      operationId: whatsappVerify
+      tags: [WhatsApp]
+      summary: Meta webhook verification handshake
+      description: |
+        Called by Meta during webhook registration. Echoes the `hub.challenge`
+        value back when the `hub.verify_token` matches `WHATSAPP_VERIFY_TOKEN`.
+      parameters:
+        - name: hub.mode
+          in: query
+          required: true
+          description: Must be `subscribe` for the handshake to succeed.
+          schema:
+            type: string
+            enum: [subscribe]
+          example: subscribe
+        - name: hub.verify_token
+          in: query
+          required: true
+          description: Token you define and configure in the Meta Developer Console.
+          schema:
+            type: string
+          example: "my-secret-token"
+        - name: hub.challenge
+          in: query
+          required: true
+          description: Random string that must be echoed back verbatim.
+          schema:
+            type: string
+          example: "1158201444"
+      responses:
+        "200":
+          description: Webhook verified — challenge echoed back as plain text.
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: "1158201444"
+        "403":
+          description: Verification failed — token mismatch or wrong mode.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorDetail"
+              examples:
+                token_mismatch:
+                  summary: Wrong token
+                  value:
+                    detail: "Token de verificación incorrecto"
+
+    post:
+      operationId: whatsappReceive
+      tags: [WhatsApp]
+      summary: Receive incoming WhatsApp messages
+      description: |
+        Called by Meta when a WhatsApp user sends a message to your number.
+
+        The endpoint **always returns HTTP 200** immediately, as required by Meta's
+        webhook contract. The bot reply is sent asynchronously via the
+        Meta Cloud API.
+
+        Only `type: text` messages are processed; all other types (images, stickers,
+        reactions, etc.) are silently acknowledged.
+      requestBody:
+        required: true
+        description: Meta webhook notification payload (WhatsApp Business Account format).
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MetaWebhookPayload"
+            examples:
+              text_message:
+                summary: Incoming text message
+                value:
+                  object: "whatsapp_business_account"
+                  entry:
+                    - id: "WHATSAPP_BUSINESS_ACCOUNT_ID"
+                      changes:
+                        - value:
+                            messaging_product: "whatsapp"
+                            metadata:
+                              display_phone_number: "15551234567"
+                              phone_number_id: "PHONE_NUMBER_ID"
+                            messages:
+                              - from: "15550005555"
+                                id: "wamid.ABC123"
+                                timestamp: "1700000000"
+                                text:
+                                  body: "Hello, I need help!"
+                                type: "text"
+                          field: "messages"
+      responses:
+        "200":
+          description: |
+            Always returned, regardless of processing outcome.
+            Meta requires a fast 200 acknowledgement.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookAck"
+              example:
+                status: ok
+
+components:
+  schemas:
+    AskBotRequest:
+      type: object
+      required: [msg, session_id]
+      properties:
+        msg:
+          type: string
+          minLength: 1
+          description: |
+            The user's message. Leading/trailing whitespace is stripped.
+            Must not be blank after stripping.
+          example: "What can you help me with?"
+        session_id:
+          type: string
+          minLength: 1
+          description: |
+            Opaque identifier that scopes conversation history.
+            Create one per user or per conversation thread and reuse it
+            across sequential requests.
+          example: "user-123"
+
+    AskBotResponse:
+      type: object
+      required: [msg, session_id]
+      properties:
+        msg:
+          type: string
+          description: The bot's reply.
+          example: "I can answer questions, help with tasks, and much more!"
+        session_id:
+          type: string
+          description: The same session identifier echoed back from the request.
+          example: "user-123"
+
+    ErrorDetail:
+      type: object
+      required: [detail]
+      properties:
+        detail:
+          type: string
+          description: Human-readable error description.
+          example: "Chat service unavailable: chain not initialized"
+
+    ValidationError:
+      type: object
+      required: [detail]
+      properties:
+        detail:
+          type: array
+          items:
+            type: object
+            required: [loc, msg, type]
+            properties:
+              loc:
+                type: array
+                items:
+                  type: string
+                description: Path to the field that failed validation.
+                example: ["body", "msg"]
+              msg:
+                type: string
+                description: Human-readable validation message.
+                example: "msg must not be blank"
+              type:
+                type: string
+                description: Pydantic error type identifier.
+                example: "value_error"
+
+    MetaWebhookPayload:
+      type: object
+      description: Meta Cloud API webhook notification envelope.
+      properties:
+        object:
+          type: string
+          example: "whatsapp_business_account"
+        entry:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+                description: WhatsApp Business Account ID.
+              changes:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    value:
+                      type: object
+                      properties:
+                        messaging_product:
+                          type: string
+                          example: "whatsapp"
+                        metadata:
+                          type: object
+                          properties:
+                            display_phone_number:
+                              type: string
+                            phone_number_id:
+                              type: string
+                        messages:
+                          type: array
+                          items:
+                            $ref: "#/components/schemas/WhatsAppMessage"
+                    field:
+                      type: string
+                      example: "messages"
+
+    WhatsAppMessage:
+      type: object
+      description: A single inbound WhatsApp message object.
+      required: [from, id, timestamp, type]
+      properties:
+        from:
+          type: string
+          description: Sender's phone number in E.164 format (no `+` prefix).
+          example: "15550005555"
+        id:
+          type: string
+          description: Unique message ID assigned by Meta.
+          example: "wamid.ABC123"
+        timestamp:
+          type: string
+          description: Unix timestamp (seconds) as a string.
+          example: "1700000000"
+        type:
+          type: string
+          description: |
+            Message type. Only `text` messages are processed by the bot;
+            all others are silently acknowledged.
+          example: "text"
+        text:
+          type: object
+          description: Present when `type` is `text`.
+          required: [body]
+          properties:
+            body:
+              type: string
+              description: The message content.
+              example: "Hello, I need help!"
+
+    WebhookAck:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+          description: Always `ok`.
+          example: ok

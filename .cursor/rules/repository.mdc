@@ -1,0 +1,13 @@
+---
+alwaysApply: true
+---
+
+# Repository
+
+This project's canonical repository is:
+
+- **URL:** https://github.com/<owner>/<repo-name>
+- **Owner:** <owner>
+- **Name:** <repo-name>
+
+When referring to the repo, GitHub links, or remote operations, use this URL. Do not assume a different owner or path.

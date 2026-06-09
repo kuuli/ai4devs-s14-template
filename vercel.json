@@ -1,0 +1,17 @@
+{
+  "builds": [
+    {
+      "src": "main.py",
+      "use": "@vercel/python",
+      "config": {
+        "runtime": "python3.12"
+      }
+    },
+    { "src": "public/**", "use": "@vercel/static" }
+  ],
+  "routes": [
+    { "src": "/askbot", "dest": "main.py" },
+    { "src": "/webhook", "dest": "main.py" },
+    { "src": "^/$", "dest": "/public/index.html" }
+  ]
+}
