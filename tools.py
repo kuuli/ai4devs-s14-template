@@ -11,39 +11,6 @@ logger = logging.getLogger("soportebot.tools")
 
 
 @tool
-def jira_search(query: str) -> str:
-    """
-    Busca issues en Jira usando texto libre.
-    Devuelve clave, título, estado y asignado de los 5 primeros resultados abiertos.
-    Llamar SIEMPRE antes de crear un ticket nuevo para evitar duplicados.
-    Parámetro: query (str) — descripción del problema o texto a buscar.
-    """
-    try:
-        issues = jira_client.search_issues(query)
-    except JIRAError as e:
-        return f"❌ Error al buscar en Jira ({e.status_code}): {e.text}"
-    except Exception as e:
-        return f"❌ Error inesperado al buscar en Jira: {e}"
-
-    if not issues:
-        return "No se encontraron issues relacionados."
-
-    lines = []
-    for issue in issues:
-        assignee = (
-            getattr(issue.fields.assignee, "displayName", "Sin asignar")
-            if issue.fields.assignee
-            else "Sin asignar"
-        )
-        lines.append(
-            f"[{issue.key}] {issue.fields.summary} "
-            f"| Estado: {issue.fields.status.name} "
-            f"| Asignado: {assignee}"
-        )
-    return "\n".join(lines)
-
-
-@tool
 def jira_create(
     resumen: str,
     descripcion: str,
@@ -52,7 +19,6 @@ def jira_create(
 ) -> str:
     """
     Crea un nuevo issue en Jira en el proyecto L1DR bajo el epic L1DR-53.
-    IMPORTANTE: llamar a jira_search primero para evitar duplicados.
     SOLO llamar tras confirmación explícita del usuario ("sí").
     tipo: Bug | Task | Story | Question
     prioridad: Blocker | High | Medium | Low
@@ -126,5 +92,5 @@ def jira_comment(issue_key: str, comentario: str) -> str:
     return f"✅ Comentario añadido a {issue_key}."
 
 
-TOOLS = [jira_search, jira_create, jira_comment]
+TOOLS = [jira_create, jira_comment]
 TOOLS_BY_NAME = {t.name: t for t in TOOLS}
