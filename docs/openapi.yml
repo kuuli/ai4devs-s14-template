@@ -1,51 +1,82 @@
 openapi: "3.1.0"
 
 info:
-  title: Chatbot API
+  title: SoporteBot API
+  description: >
+    Jira support chatbot backend. Serves the chat UI and processes
+    conversational messages through a LangChain agent that can search,
+    create, and comment on Jira issues.
   version: "1.0.0"
-  description: |
-    LangChain-powered chatbot with session-scoped conversation history.
-
-    Supports a REST chat endpoint and an optional WhatsApp Business integration
-    via the Meta Cloud API. The LLM backend runs a tool-calling agent loop
-    (up to 5 rounds) before returning a final reply.
-
-    **Session model** — pass a consistent `session_id` across requests to maintain
-    conversation context. Sessions are stored in-process and reset on server restart.
   contact:
-    name: Kuuli Tech
-    email: jmarco@kuuli.tech
-  license:
-    name: MIT
+    name: AI4Devs 202602 Seniors
+    url: https://lidr.co
 
 servers:
   - url: http://localhost:8000
     description: Local development server
 
+x-docs:
+  swagger-ui: http://localhost:8000/api-docs
+  redoc:      http://localhost:8000/api-docs/redoc
+  openapi-json: http://localhost:8000/api-docs/openapi.json
+
 tags:
-  - name: Chat
-    description: Core chat endpoint — send a message and receive a bot reply.
-  - name: WhatsApp
-    description: |
-      Meta Cloud API webhook integration.
-      Set `WHATSAPP_VERIFY_TOKEN`, `WHATSAPP_ACCESS_TOKEN`, and
-      `WHATSAPP_PHONE_NUMBER_ID` environment variables to enable.
+  - name: ui
+    description: Chat interface — serves the HTML frontend
+  - name: chat
+    description: Conversational API — the agent endpoint
+  - name: docs
+    description: API documentation — Swagger UI, ReDoc and raw OpenAPI spec
 
 paths:
+
+  # ── Chat interface ───────────────────────────────────────────────────────
+
+  /:
+    get:
+      tags: [ui]
+      operationId: serve_ui
+      summary: Chat UI
+      description: >
+        Serves the single-page chat interface (public/index.html).
+        The HTML file contains all CSS and JS inline; no separate static
+        assets are required beyond jQuery and marked.js loaded from CDN.
+      responses:
+        "200":
+          description: HTML page returned successfully
+          content:
+            text/html:
+              schema:
+                type: string
+              example: "<!DOCTYPE html><html lang=\"es\">...</html>"
+        "404":
+          description: index.html not found on the server
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HTTPError"
+              example:
+                detail: "index.html not found"
+
+  # ── Chat API ─────────────────────────────────────────────────────────────
+
   /askbot:
     post:
-      operationId: sendMessage
-      tags: [Chat]
-      summary: Send a message to the bot
-      description: |
-        Submits a user message and returns the bot reply.
+      tags: [chat]
+      operationId: askbot
+      summary: Send a message to SoporteBot
+      description: >
+        Accepts a user message and a session identifier. The session ID
+        is used to maintain conversation history in memory across turns.
+        The agent may call Jira tools (search, create, comment) or query
+        the RAG document store before returning its reply.
 
-        The agent may perform up to **5 internal tool-call rounds** before
-        producing a final response. All rounds are transparent to the caller —
-        only the final reply is returned.
+        The caller must generate a stable session_id per conversation
+        (e.g. "sess_" + Math.random().toString(36).substring(2,15))
+        and send it unchanged on every subsequent turn.
 
-        **Session continuity** — use the same `session_id` across requests to
-        maintain conversation history within a server lifecycle.
+        The endpoint returns HTTP 503 if the LangChain chain failed to
+        initialise (missing API key or import error at startup).
       requestBody:
         required: true
         content:
@@ -53,313 +84,211 @@ paths:
             schema:
               $ref: "#/components/schemas/AskBotRequest"
             examples:
-              basic:
-                summary: Simple greeting
+              first_message:
+                summary: User reports a bug
                 value:
-                  msg: "What can you help me with?"
-                  session_id: "user-123"
-              follow_up:
-                summary: Follow-up in the same session
+                  msg: "El botón de login no funciona en producción"
+                  session_id: "sess_abc123"
+              confirmation:
+                summary: User confirms ticket creation
                 value:
-                  msg: "Tell me more about the second point."
-                  session_id: "user-123"
+                  msg: "Sí, crea el ticket"
+                  session_id: "sess_abc123"
+              comment_on_existing:
+                summary: User adds a comment to an existing ticket
+                value:
+                  msg: "Añade al ticket SUP-42 que ya lo estamos revisando"
+                  session_id: "sess_abc123"
+              technical_question:
+                summary: User asks a technical question (triggers rag_docs)
+                value:
+                  msg: "¿Cómo configuramos las variables de entorno en este proyecto?"
+                  session_id: "sess_abc123"
       responses:
         "200":
-          description: Bot reply returned successfully.
+          description: Bot reply returned successfully
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/AskBotResponse"
               examples:
-                reply:
-                  summary: Successful reply
+                search_result:
+                  summary: Agent found a similar ticket
                   value:
-                    msg: "I can answer questions, help with tasks, and much more!"
-                    session_id: "user-123"
+                    msg: >
+                      He encontrado un ticket similar: [SUP-38] Login falla en
+                      producción | Estado: In Progress | Asignado: Ana García.
+                      ¿Quieres añadir un comentario en lugar de abrir uno nuevo?
+                    session_id: "sess_abc123"
+                confirmation_prompt:
+                  summary: Agent asks for confirmation before creating
+                  value:
+                    msg: |
+                      Voy a crear este ticket en Jira:
+                      - Proyecto:    SUP
+                      - Tipo:        Bug
+                      - Resumen:     Login falla en producción
+                      - Prioridad:   High
+                      - Descripción: Los usuarios reciben un error 500 al intentar iniciar sesión.
+
+                      ¿Confirmas que lo cree?
+                    session_id: "sess_abc123"
+                ticket_created:
+                  summary: Ticket created successfully
+                  value:
+                    msg: "✅ Ticket creado: SUP-42 — https://your-org.atlassian.net/browse/SUP-42"
+                    session_id: "sess_abc123"
         "422":
-          description: |
-            Validation error — `msg` is blank, missing, or a required field
-            failed validation.
+          description: Request validation failed (empty msg, missing fields)
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ValidationError"
-              examples:
-                blank_msg:
-                  summary: Blank message
-                  value:
-                    detail:
-                      - loc: ["body", "msg"]
-                        msg: "msg must not be blank"
-                        type: "value_error"
+              example:
+                detail:
+                  - loc: ["body", "msg"]
+                    msg: "msg must not be blank"
+                    type: "value_error"
         "503":
-          description: |
-            Chat service unavailable — the LLM chain failed to initialise.
-            Typically caused by a missing or invalid `OPENAI_API_KEY`.
-            Static routes (`/` and `/public/*`) remain available.
+          description: >
+            LangChain chain not initialised. Caused by a missing
+            OPENAI_API_KEY or an import error at startup.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ErrorDetail"
-              examples:
-                missing_key:
-                  summary: Missing API key
-                  value:
-                    detail: "Chat service unavailable: OPENAI_API_KEY is not set"
+                $ref: "#/components/schemas/HTTPError"
+              example:
+                detail: "Chat service unavailable: chain not initialized"
 
-  /webhook:
+  # ── API documentation ────────────────────────────────────────────────────
+
+  /api-docs:
     get:
-      operationId: whatsappVerify
-      tags: [WhatsApp]
-      summary: Meta webhook verification handshake
-      description: |
-        Called by Meta during webhook registration. Echoes the `hub.challenge`
-        value back when the `hub.verify_token` matches `WHATSAPP_VERIFY_TOKEN`.
-      parameters:
-        - name: hub.mode
-          in: query
-          required: true
-          description: Must be `subscribe` for the handshake to succeed.
-          schema:
-            type: string
-            enum: [subscribe]
-          example: subscribe
-        - name: hub.verify_token
-          in: query
-          required: true
-          description: Token you define and configure in the Meta Developer Console.
-          schema:
-            type: string
-          example: "my-secret-token"
-        - name: hub.challenge
-          in: query
-          required: true
-          description: Random string that must be echoed back verbatim.
-          schema:
-            type: string
-          example: "1158201444"
+      tags: [docs]
+      operationId: swagger_ui
+      summary: Swagger UI
+      description: >
+        Interactive API documentation rendered by Swagger UI.
+        Allows exploring and executing both endpoints directly from the browser.
+        Configured in FastAPI via docs_url="/api-docs".
       responses:
         "200":
-          description: Webhook verified — challenge echoed back as plain text.
+          description: Swagger UI HTML page
           content:
-            text/plain:
+            text/html:
               schema:
                 type: string
-              example: "1158201444"
-        "403":
-          description: Verification failed — token mismatch or wrong mode.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorDetail"
-              examples:
-                token_mismatch:
-                  summary: Wrong token
-                  value:
-                    detail: "Token de verificación incorrecto"
 
-    post:
-      operationId: whatsappReceive
-      tags: [WhatsApp]
-      summary: Receive incoming WhatsApp messages
-      description: |
-        Called by Meta when a WhatsApp user sends a message to your number.
-
-        The endpoint **always returns HTTP 200** immediately, as required by Meta's
-        webhook contract. The bot reply is sent asynchronously via the
-        Meta Cloud API.
-
-        Only `type: text` messages are processed; all other types (images, stickers,
-        reactions, etc.) are silently acknowledged.
-      requestBody:
-        required: true
-        description: Meta webhook notification payload (WhatsApp Business Account format).
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/MetaWebhookPayload"
-            examples:
-              text_message:
-                summary: Incoming text message
-                value:
-                  object: "whatsapp_business_account"
-                  entry:
-                    - id: "WHATSAPP_BUSINESS_ACCOUNT_ID"
-                      changes:
-                        - value:
-                            messaging_product: "whatsapp"
-                            metadata:
-                              display_phone_number: "15551234567"
-                              phone_number_id: "PHONE_NUMBER_ID"
-                            messages:
-                              - from: "15550005555"
-                                id: "wamid.ABC123"
-                                timestamp: "1700000000"
-                                text:
-                                  body: "Hello, I need help!"
-                                type: "text"
-                          field: "messages"
+  /api-docs/redoc:
+    get:
+      tags: [docs]
+      operationId: redoc_ui
+      summary: ReDoc UI
+      description: >
+        Alternative API documentation rendered by ReDoc.
+        Read-only view with a three-panel layout.
+        Configured in FastAPI via redoc_url="/api-docs/redoc".
       responses:
         "200":
-          description: |
-            Always returned, regardless of processing outcome.
-            Meta requires a fast 200 acknowledgement.
+          description: ReDoc HTML page
+          content:
+            text/html:
+              schema:
+                type: string
+
+  /api-docs/openapi.json:
+    get:
+      tags: [docs]
+      operationId: openapi_schema
+      summary: OpenAPI JSON schema
+      description: >
+        Raw OpenAPI 3.1.0 schema in JSON format.
+        Consumed by Swagger UI and ReDoc to render the documentation.
+        Configured in FastAPI via openapi_url="/api-docs/openapi.json".
+      responses:
+        "200":
+          description: OpenAPI schema object
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/WebhookAck"
-              example:
-                status: ok
+                type: object
+                description: OpenAPI 3.1.0 schema
 
 components:
   schemas:
+
     AskBotRequest:
       type: object
-      required: [msg, session_id]
+      required:
+        - msg
+        - session_id
       properties:
         msg:
           type: string
           minLength: 1
-          description: |
-            The user's message. Leading/trailing whitespace is stripped.
-            Must not be blank after stripping.
-          example: "What can you help me with?"
+          description: >
+            Message from the user. Leading and trailing whitespace is
+            stripped before processing. Must not be blank after stripping.
+          example: "El botón de login no funciona en producción"
         session_id:
           type: string
           minLength: 1
-          description: |
-            Opaque identifier that scopes conversation history.
-            Create one per user or per conversation thread and reuse it
-            across sequential requests.
-          example: "user-123"
+          description: >
+            Opaque identifier for the conversation session. Must remain
+            constant across all turns of the same conversation. Generated
+            by the client (e.g. "sess_" + Math.random().toString(36).substring(2,15)).
+          example: "sess_abc123"
 
     AskBotResponse:
       type: object
-      required: [msg, session_id]
+      required:
+        - msg
+        - session_id
       properties:
         msg:
           type: string
-          description: The bot's reply.
-          example: "I can answer questions, help with tasks, and much more!"
+          description: >
+            Reply from the bot. May contain Markdown (the UI renders it
+            via marked.js). May include Jira ticket keys, URLs, or
+            structured confirmation summaries.
+          example: "✅ Ticket creado: SUP-42 — https://your-org.atlassian.net/browse/SUP-42"
         session_id:
           type: string
-          description: The same session identifier echoed back from the request.
-          example: "user-123"
+          description: Same session_id echoed back from the request.
+          example: "sess_abc123"
 
-    ErrorDetail:
+    HTTPError:
       type: object
-      required: [detail]
+      required:
+        - detail
       properties:
         detail:
           type: string
-          description: Human-readable error description.
-          example: "Chat service unavailable: chain not initialized"
+          description: Human-readable error message.
+          example: "index.html not found"
 
     ValidationError:
       type: object
-      required: [detail]
+      required:
+        - detail
       properties:
         detail:
           type: array
           items:
             type: object
-            required: [loc, msg, type]
+            required:
+              - loc
+              - msg
+              - type
             properties:
               loc:
                 type: array
                 items:
                   type: string
-                description: Path to the field that failed validation.
                 example: ["body", "msg"]
               msg:
                 type: string
-                description: Human-readable validation message.
                 example: "msg must not be blank"
               type:
                 type: string
-                description: Pydantic error type identifier.
                 example: "value_error"
-
-    MetaWebhookPayload:
-      type: object
-      description: Meta Cloud API webhook notification envelope.
-      properties:
-        object:
-          type: string
-          example: "whatsapp_business_account"
-        entry:
-          type: array
-          items:
-            type: object
-            properties:
-              id:
-                type: string
-                description: WhatsApp Business Account ID.
-              changes:
-                type: array
-                items:
-                  type: object
-                  properties:
-                    value:
-                      type: object
-                      properties:
-                        messaging_product:
-                          type: string
-                          example: "whatsapp"
-                        metadata:
-                          type: object
-                          properties:
-                            display_phone_number:
-                              type: string
-                            phone_number_id:
-                              type: string
-                        messages:
-                          type: array
-                          items:
-                            $ref: "#/components/schemas/WhatsAppMessage"
-                    field:
-                      type: string
-                      example: "messages"
-
-    WhatsAppMessage:
-      type: object
-      description: A single inbound WhatsApp message object.
-      required: [from, id, timestamp, type]
-      properties:
-        from:
-          type: string
-          description: Sender's phone number in E.164 format (no `+` prefix).
-          example: "15550005555"
-        id:
-          type: string
-          description: Unique message ID assigned by Meta.
-          example: "wamid.ABC123"
-        timestamp:
-          type: string
-          description: Unix timestamp (seconds) as a string.
-          example: "1700000000"
-        type:
-          type: string
-          description: |
-            Message type. Only `text` messages are processed by the bot;
-            all others are silently acknowledged.
-          example: "text"
-        text:
-          type: object
-          description: Present when `type` is `text`.
-          required: [body]
-          properties:
-            body:
-              type: string
-              description: The message content.
-              example: "Hello, I need help!"
-
-    WebhookAck:
-      type: object
-      required: [status]
-      properties:
-        status:
-          type: string
-          enum: [ok]
-          description: Always `ok`.
-          example: ok
