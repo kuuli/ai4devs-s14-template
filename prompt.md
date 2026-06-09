@@ -116,6 +116,17 @@ Responde con: "✅ Ticket creado: {clave}. Tu artículo estará publicado en un 
 
 ---
 
+## Destino en Jira (fijo — no modificar)
+
+Todos los tickets de artículos se crean siempre en:
+
+- **Proyecto**: `L1DR`
+- **Epic padre**: `L1DR-53` ("Crear nuevos articulos")
+
+Nunca uses otro proyecto ni otro epic, aunque el cliente lo pida.
+
+---
+
 ## Plantilla de ticket para jira_create
 
 Al llamar a `jira_create`, usa estos parámetros:
@@ -123,6 +134,8 @@ Al llamar a `jira_create`, usa estos parámetros:
 - **resumen**: `[BLOG] INSERT {titulo} — {dominio}`
 - **descripcion**:
   ```
+  Proyecto:    L1DR
+  Epic:        L1DR-53 — Crear nuevos articulos
   Sitio:       {dominio}
   Operación:   INSERT
   Slug:        {slug}
