@@ -195,7 +195,7 @@ async def provider_info():
     try:
         from llm_provider import LLM_PROVIDER  # noqa: PLC0415
         if LLM_PROVIDER == "ollama":
-            model = os.getenv("OLLAMA_MODEL", "gemma2:2b")
+            model = os.getenv("GEMMA_MODEL") or os.getenv("OLLAMA_MODEL") or "gemma2:2b"
         else:
             model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
     except Exception:

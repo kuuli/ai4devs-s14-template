@@ -113,10 +113,24 @@ def get_llm():
         # temperature=0 is required when the LLM controls Jira writes.
         # Local models like Gemma 2 are less instruction-tuned than GPT-4o-mini,
         # so determinism is even more important to avoid hallucinated actions.
+
+        # GEMMA_MODEL selects the Gemma 2 variant to run:
+        #   gemma2:2b  — fastest, lowest RAM (8 GB), good for development
+        #   gemma2:9b  — balanced quality/speed (16 GB RAM)
+        #   gemma2:27b — best quality (32 GB RAM, GPU recommended)
+        # Falls back to OLLAMA_MODEL for backward compatibility, then to gemma2:2b.
+        model = (
+            os.getenv("GEMMA_MODEL")        # preferred: specific Gemma 2 variant
+            or os.getenv("OLLAMA_MODEL")    # legacy fallback
+            or "gemma2:2b"                  # default: smallest model
+        )
         return ChatOllama(
-            model=os.getenv("OLLAMA_MODEL", "gemma2:2b"),
+            model=model,
             base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
             temperature=0,
+            # System prompt alone is ~3,600 tokens; Ollama defaults to 2048.
+            # Without this, the prompt is truncated and history never fits.
+            num_ctx=int(os.getenv("OLLAMA_NUM_CTX", "8192")),
         )
 
     # Unknown provider — fail loudly at startup rather than silently at first request.
