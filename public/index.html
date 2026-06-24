@@ -35,6 +35,38 @@
             font-size: 18px;
             font-weight: 600;
             flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .llm-badge {
+            font-size: 12px;
+            font-weight: 500;
+            padding: 4px 10px;
+            border-radius: 12px;
+            letter-spacing: 0.3px;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+
+        .llm-badge.openai {
+            background: #10a37f20;
+            color: #10a37f;
+            border: 1px solid #10a37f55;
+        }
+
+        .llm-badge.ollama {
+            background: #f97316twenty;
+            background: rgba(249,115,22,0.15);
+            color: #f97316;
+            border: 1px solid rgba(249,115,22,0.4);
+        }
+
+        .llm-badge.unknown {
+            background: rgba(255,255,255,0.1);
+            color: #aaa;
+            border: 1px solid rgba(255,255,255,0.2);
         }
 
         .chat-messages {
@@ -118,7 +150,10 @@
 </head>
 <body>
     <div class="chat-container">
-        <div class="chat-header">Asistente Virtual</div>
+        <div class="chat-header">
+            <span>Asistente Virtual</span>
+            <span class="llm-badge unknown" id="llmBadge">…</span>
+        </div>
         <div class="chat-messages" id="chatMessages"></div>
         <div class="chat-input-area">
             <input type="text" id="msgInput" placeholder="Escribe tu mensaje..." autocomplete="off">
@@ -186,6 +221,17 @@
         });
 
         appendMessage("¡Hola! Soy tu asistente virtual. ¿En qué puedo ayudarte hoy?", "bot");
+
+        // Fetch active LLM provider from the backend and show it in the header badge.
+        // The /provider endpoint returns { provider: "openai"|"ollama", model: "gpt-4o-mini"|"gemma2:2b" }
+        var PROVIDER_ICONS = { openai: "⚡", ollama: "🦙" };
+        $.getJSON("/provider", function (data) {
+            var icon = PROVIDER_ICONS[data.provider] || "🤖";
+            var badge = document.getElementById("llmBadge");
+            badge.textContent = icon + " " + data.provider + " · " + data.model;
+            badge.className = "llm-badge " + (data.provider || "unknown");
+            badge.style.opacity = "1";
+        });
     })();
     </script>
 </body>

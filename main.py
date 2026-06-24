@@ -16,14 +16,14 @@ from datetime import date
 from pathlib import Path
 
 import httpx
+import openai
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, PlainTextResponse
 from langchain_core.chat_history import InMemoryChatMessageHistory
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables.history import RunnableWithMessageHistory
-from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field, field_validator
 
 from tools import TOOLS
@@ -55,7 +55,12 @@ app = FastAPI(
 
 
 def _load_prompt() -> str:
-    return (BASE_DIR / "prompt.md").read_text(encoding="utf-8")
+    raw = (BASE_DIR / "prompt.md").read_text(encoding="utf-8")
+    # Escape all braces so ChatPromptTemplate doesn't treat prompt examples
+    # like {slug-propuesto} or {tag1} as format variables, then restore
+    # {today} which is the only real template variable in the system prompt.
+    escaped = raw.replace("{", "{{").replace("}", "}}")
+    return escaped.replace("{{today}}", "{today}")
 
 
 # ── Session store ───────────────────────────────────────────────────────────
@@ -127,10 +132,12 @@ try:
         ]
     )
 
-    _llm = ChatOpenAI(
-        model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-        temperature=0.3,
-    )
+    # All provider selection logic lives in llm_provider.py.
+    # To switch between OpenAI and Ollama, set LLM_PROVIDER in .env and restart.
+    from llm_provider import get_llm, LLM_PROVIDER  # noqa: PLC0415
+
+    _llm = get_llm()
+    logger.info("LLM provider: %s", LLM_PROVIDER)
     _llm_with_tools = _llm.bind_tools(TOOLS)
 
     _chain = _prompt_template | RunnableLambda(_agent_loop_runnable)
@@ -180,6 +187,21 @@ class AskBotResponse(BaseModel):
 
 
 # ── Endpoints ───────────────────────────────────────────────────────────────
+
+
+@app.get("/provider", tags=["Info"], summary="Active LLM provider and model")
+async def provider_info():
+    """Return the active LLM provider and model name so the UI can display them."""
+    try:
+        from llm_provider import LLM_PROVIDER  # noqa: PLC0415
+        if LLM_PROVIDER == "ollama":
+            model = os.getenv("OLLAMA_MODEL", "gemma2:2b")
+        else:
+            model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    except Exception:
+        LLM_PROVIDER = "unknown"
+        model = "unknown"
+    return {"provider": LLM_PROVIDER, "model": model}
 
 
 @app.get("/", include_in_schema=False)
@@ -313,6 +335,7 @@ async def whatsapp_receive(request: Request):
             },
         },
         422: {"description": "Validation error — msg is blank or missing required fields"},
+        429: {"description": "OpenAI rate limit reached — slow down and retry"},
         503: {"description": "LLM chain failed to initialise (missing API key or config error)"},
     },
 )
@@ -328,9 +351,19 @@ async def askbot(body: AskBotRequest) -> AskBotResponse:
             detail=f"Chat service unavailable: {_init_error or 'chain not initialized'}",
         )
 
-    response = await chat.ainvoke(
-        {"input": body.msg, "today": date.today().isoformat()},
-        config={"configurable": {"session_id": body.session_id}},
-    )
+    try:
+        response = await chat.ainvoke(
+            {"input": body.msg, "today": date.today().isoformat()},
+            config={"configurable": {"session_id": body.session_id}},
+        )
+    except openai.AuthenticationError:
+        raise HTTPException(status_code=503, detail="Invalid OpenAI API key — check OPENAI_API_KEY in .env")
+    except openai.RateLimitError:
+        raise HTTPException(status_code=429, detail="OpenAI rate limit reached — please try again in a moment")
+    except openai.APIConnectionError:
+        raise HTTPException(status_code=503, detail="Could not connect to OpenAI — check your internet connection")
+    except Exception as exc:
+        logger.exception("Unexpected error in chat chain")
+        raise HTTPException(status_code=500, detail=str(exc))
 
     return AskBotResponse(msg=response, session_id=body.session_id)
